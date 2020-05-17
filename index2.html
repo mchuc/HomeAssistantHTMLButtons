@@ -1,0 +1,322 @@
+<!--
+(C) Marcin Chuć 2020
+https://afya.pl
+e-mail: marcin[remove this, along with the brace bracket]@afya.pl
+-->
+<!doctype html>
+<html lang="pl">
+
+<head>
+  <meta charset="utf-8">
+  <!--  CHANGES BASICALLY ONLY HERE / ZMIANY W ZASADZIE TYLKO TUTAJ -->
+  <script type="text/javascript">
+    //access token, which you will generate on the HA website: http://IP:PORT/profile in the TOKENS section
+    // token dostępu, który wygenerujesz na stronie HA: http://IP:PORT/profile   w dziale TOKENY
+    let TOKEN = 'TOKEN';
+
+    // IP of your HA
+    //IP twojego HA
+
+    let IP = '192.168.1.1';
+
+    //The PORT on which HA operates
+    //PORT na którym działa HA
+    let PORT = '8123';
+
+    /** 
+    which variable I want to change/track
+    if you want a variable, add it in HA:
+    in configuration.yaml
+
+    którą zmienną chcę zmienić / śledzić
+    jeśli chcesz zmienna dodaj sobie w HA:
+    w configuration.yaml
+
+    input_boolean:         !include zmienne.yaml
+
+    then create the file in the same directory:
+    variables.yaml and write there:
+     dom_nie_gas_gory:
+        name:         Don't turn off the light upstairs
+        icon:         mdi:lightbulb-on   
+    
+    nastepnie utwórz plik w tym samym katalogu:
+    zmienne.yaml i tam dopisz:
+    dom_nie_gas_gory:
+        name:         Nie gaś światła na górze
+        icon:         mdi:lightbulb-on
+    */
+
+    /**
+I assign the buttons by:
+VARIABLES['HERE NAME OF THE VARIABLE IN HOME ASSISTANT'] = {id:'#ID_OF_THE_BUTTON',on:'text when variable is true', off:'text when variable is off'}
+
+przypisuję przyciski wg:
+VARIABLES['TUTAJ NAZWA ZMIENNEJ W HOME ASSISTANT'] = {id:'#ID_PRZYCISKU',on:'tekst, kiedy zmienna jest true', off:'tekst kiedy zmienna off'}
+    */
+    var VARIABLES = {};
+    VARIABLES['input_boolean.dom_nie_gas_gory'] = {
+      'id': "#bt1",
+      'on': "Światło na górze nie będzie gasło",
+      'off': 'Światło na górze w trybie normalnym'
+    };
+    VARIABLES['input_boolean.dom_nie_gas_wc'] = {
+      'id': "#bt2",
+      'on': "Światło w toalecie na dole nie będzie gasło",
+      'off': 'Światło w toalecnie na dole w trybie normalnym'
+    };
+  </script>
+  <!-- THE END OF YOUR CHANGES / KONIEC TWOICH ZMIAN-->
+
+
+  <title>HA - Switches</title>
+  <meta name="theme-color" content="#86c440" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=0.6, shrink-to-fit=yes">
+  <!-- material design-->
+  <link rel="stylesheet" href="https://cdn.materialdesignicons.com/5.0.45/css/materialdesignicons.min.css" />
+  <!-- JQUERY 3.4.1-->
+  <script src="https://code.jquery.com/jquery-3.4.1.js" integrity="sha256-WpOohJOqMqqyKL9FccASB9O0KwACQJpFTUBLTYOVvVU=" crossorigin="anonymous"></script>
+  <!--bootstrap CCS-->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+  <!--bootstrap js-->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
+  <script type="text/javascript">
+    /*
+    I'm not gonna change below, unless we know what we're doing
+    Znie zmieniać poniżej, chyba, ze wiemy, co robimy
+    */
+    let WS_URL = 'ws://' + IP + ':' + PORT + '/api/websocket';
+    var WS;
+    var ZALOGOWANO = false;
+    var COMMAND_ID = 0;
+    var STATUS_COMMAND_ID = -1;
+    var STATE = {};
+    /*Startujemy funkcję po załadowaniu całości*/
+    $(function() {
+      // przypisuję każdemu przyciskowi akcję zmiany, inicjalizuję stany
+      afyaHAInitButtons()
+      //start systemu
+      afyaHAStart();
+    });
+
+
+    function afyaHAInitButtons() {
+      for (let [k, v] of Object.entries(VARIABLES)) {
+        STATE[k] = -1;
+        logAppend(`# aktywuję przycisk ${v.id} dla zmiennej śledzonej ${k}`);
+        let b = $(v.id);
+        b.attr('variable', k);
+        $(b).click(function() {
+          afyaHAClick($(this))
+        });
+      }
+      logAppend('## init zakończony');
+    }
+
+    function afyaHAClick(o) {
+      if (!ZALOGOWANO) {
+        logAppend('## przycisk nie będzie działał, nie zalogowano!');
+      } else {
+        logAppend('## kliknięto ' + o.attr("id") + "   { śledzi " + o.attr("variable") + " }");
+        COMMAND_ID++;
+
+        odp = {};
+        odp.id = COMMAND_ID;
+        odp.type = "call_service"
+        odp.domain = "input_boolean"
+        if (STATE[o.attr("variable")] == 'off') {
+          odp.service = "turn_on"
+        } else {
+          odp.service = "turn_off"
+        }
+        odp.service_data = {};
+        odp.service_data.entity_id = o.attr("variable");
+        afyaHASend(odp);
+      }
+    }
+    /**
+    logowanie
+    */
+    function logAppend(txt) {
+      $('#log').append(txt + '\n');
+      $('#log').scrollTop(999999);
+    }
+
+    function afyaHASubscribe() {
+      COMMAND_ID++;
+      odp = {};
+      odp.id = COMMAND_ID;
+      odp.type = "subscribe_events";
+      odp.event_type = "state_changed";
+      afyaHASend(odp);
+    }
+    /**
+    sam sobie pobieram statusy, nie czekam na HA
+    */
+    function afyaHAFethStates() {
+      COMMAND_ID++;
+      STATUS_COMMAND_ID = COMMAND_ID; // tutaj wrzucam ID zapytania, z tym numerem wróci odpowiedź
+      odp = {}
+      odp.id = COMMAND_ID;
+      odp.type = "get_states";
+      afyaHASend(odp);
+
+    }
+
+    /**
+    procesowanie odpowiedzi, w zasadzie, najważniejsza z funkcji
+    */
+    function afyaHAProcessMsg(msg, event) {
+      /**
+      informacje nt API uzyskano na stronie https://developers.home-assistant.io/docs/api/websocket/
+      */
+      //  logAppend(msg);
+      try {
+        obj = JSON.parse(msg);
+
+        if (obj.hasOwnProperty('type')) {
+
+          if (obj.type == 'auth_required') //nie jestem zalogowany, potrzeba logowania
+          {
+            logAppend('@@ Potrzeba logowania! Loguję...')
+            odp = {}
+            odp.type = 'auth'
+            odp.access_token = TOKEN
+            afyaHASend(odp);
+          } else if (obj.type == 'auth_ok') { // zalogowano mnie
+            logAppend('@@ Zalogowano@@');
+            ZALOGOWANO = true;
+            afyaHASubscribe();
+            afyaHAFethStates();
+          } else if (obj.type == 'auth_invalid') { // błędne logowanie
+            logAppend('@@ Błąd logowania:');
+            logAppend(obj.message);
+          } else if (obj.type == 'event') {
+            if (obj.hasOwnProperty('event')) {
+              afyaHAProsessEvent(obj.event);
+            }
+          } else if (obj.type == 'result') { // sprawdzamy rezultat pytania o stan na dzień dobry...
+            if (obj.id == STATUS_COMMAND_ID && obj.success == true) {
+              logAppend('@@ powróciła odpowiedź na pytanie stan systemu');
+              let result = obj.result;
+              for (var ev of result) {
+                if (VARIABLES.hasOwnProperty(ev.entity_id)) {
+                  afyaHAChangeState(ev.state, VARIABLES[ev.entity_id].id);
+                  STATE[ev.entity_id] = ev.state;
+                }
+              }
+            }
+
+          }
+
+        }
+
+
+      } catch (e) {
+        logAppend("Błąd jakiś " + String(e));
+      }
+
+    }
+
+    function afyaHAProsessEvent(ev) {
+      //logAppend('@ Procesuję evnt ' + JSON.stringify(ev));
+
+      if (ev.hasOwnProperty('event_type')) {
+        if (ev.event_type == 'state_changed') {
+          if (VARIABLES.hasOwnProperty(ev.data.entity_id)) {
+            let state = ev.data.new_state.state;
+            afyaHAChangeState(state, VARIABLES[ev.data.entity_id].id);
+            STATE[ev.data.entity_id] = state;
+          }
+        }
+      }
+
+    }
+
+    function afyaHAChangeState(state, obj = '#bt1') {
+      let btn = $(obj);
+      if (state == 'on') {
+        btn.removeClass('btn-danger').addClass('btn-success').addClass('blink');
+        btn.html(VARIABLES[btn.attr("variable")].on);
+      } else {
+        btn.removeClass('btn-success').removeClass('blink').addClass('btn-danger');
+        btn.html(VARIABLES[btn.attr("variable")].off);
+      }
+
+    }
+
+    function afyaHAConnected() {
+      logAppend('@@ Zalogowano do serwera ' + IP);
+    }
+
+    function afyaHADisconnected() {
+      logAppend('@@ Zakończono połączenie z serwerem ' + IP);
+    }
+    /**
+    wyłanie odpowiedzi do HA
+    */
+    function afyaHASend(obj) {
+      WS.send(JSON.stringify(obj));
+    }
+
+    /**
+    rozpoczynamy zabawę, inicjalicacja całości
+    */
+    function afyaHAStart() {
+      logAppend("OK - jQuery działa, skrypt załadowany");
+      WS = new WebSocket(WS_URL);
+      WS.onclose = function() {
+        afyaHADisconnected();
+      };
+      WS.onopen = function() {
+        afyaHAConnected();
+      };
+      WS.onmessage = function(event) {
+        afyaHAProcessMsg(event.data, event);
+      };
+    }
+  </script>
+  <style>
+    .blink {
+      animation: blink-animation 1s linear infinite;
+      -webkit-animation: blink-animation 1s linear infinite;
+    }
+
+    @keyframes blink-animation {
+      20% {
+        background: rgb(33, 136, 56);
+      }
+
+      50% {
+        background: rgb(255, 193, 7);
+      }
+
+      70% {
+        background: rgb(33, 136, 56);
+      }
+    }
+
+    @-webkit-keyframes blink-animation {
+      20% {
+        background: rgb(33, 136, 56);
+      }
+
+      50% {
+        background: rgb(255, 193, 7);
+      }
+
+      40% {
+        background: rgb(33, 136, 56);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <textarea id="log" rows="8" cols="80"></textarea><br>
+  <button type="button" id="bt1" class="btn">bt1</button>
+  <button type="button" id="bt2" class="btn">bt2</button>
+</body>
+
+</html>
